@@ -1,5 +1,7 @@
 # AI Drone Simulation
 
+Important note: This is a test project, and the current interception results are not good.
+
 Small description: A 2D radar-based drone interception simulator that compares missile guidance strategies (Pure Pursuit vs Proportional Navigation) against straight and zigzag enemy flight patterns.
 
 ## Overview
@@ -67,3 +69,7 @@ npm run build
 ## Project Goal
 
 Provide a compact, understandable sandbox for guidance-law behavior under target maneuvers, with visible trajectories and coordinate-level outcomes.
+
+## Current Status
+
+This is still an experimental test build. The current results are not good enough for production-level reliability.

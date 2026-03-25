@@ -34,6 +34,18 @@ interface InterceptLog {
   guidance: 'PURE_PURSUIT' | 'PROPORTIONAL_NAVIGATION';
 }
 
+interface MathTelemetry {
+  missileId: number;
+  targetId: number;
+  range: number;
+  closingVelocity: number;
+  losRate: number;
+  headingErrorDeg: number;
+  commandTurnDegPerSec: number;
+  lateralAccel: number;
+  timeToGo: number;
+}
+
 type EnemyPattern = 'STRAIGHT' | 'ZIGZAG';
 type GuidanceMode = 'PURE_PURSUIT' | 'PROPORTIONAL_NAVIGATION';
 type SimulationStatus = 'IDLE' | 'RUNNING' | 'SUCCESS' | 'FAILED';
@@ -126,12 +138,14 @@ function App() {
   const [missiles, setMissiles] = useState<Missile[]>([]);
   const [logs, setLogs] = useState<InterceptLog[]>([]);
   const [simTime, setSimTime] = useState(0);
+  const [mathTelemetry, setMathTelemetry] = useState<MathTelemetry | null>(null);
 
   const missileCounterRef = useRef(1);
   const enemiesRef = useRef<EnemyDrone[]>(generateEnemies());
   const missilesRef = useRef<Missile[]>([]);
   const simTimeRef = useRef(0);
   const guidanceRef = useRef<GuidanceMode>('PURE_PURSUIT');
+  const mathTelemetryRef = useRef<MathTelemetry | null>(null);
 
   const runningRef = useRef(false);
   const rafRef = useRef<number | null>(null);
@@ -199,6 +213,8 @@ function App() {
     missilesRef.current = [];
     setMissiles([]);
     setLogs([]);
+    mathTelemetryRef.current = null;
+    setMathTelemetry(null);
     simTimeRef.current = 0;
     setSimTime(0);
     missileCounterRef.current = 1;
@@ -213,6 +229,8 @@ function App() {
     missilesRef.current = [];
     setMissiles([]);
     setLogs([]);
+    mathTelemetryRef.current = null;
+    setMathTelemetry(null);
     simTimeRef.current = 0;
     setSimTime(0);
     missileCounterRef.current = 1;
@@ -311,6 +329,52 @@ function App() {
       };
     });
 
+    const sampleMissile = updatedMissiles.find(missile => missile.active);
+    if (sampleMissile) {
+      const sampleTarget = updatedEnemies.find(enemy => enemy.id === sampleMissile.targetId && enemy.active);
+      if (sampleTarget) {
+        const relPos = {
+          x: sampleTarget.position.x - sampleMissile.position.x,
+          y: sampleTarget.position.y - sampleMissile.position.y,
+        };
+        const relVel = {
+          x: sampleTarget.velocity.x - sampleMissile.velocity.x,
+          y: sampleTarget.velocity.y - sampleMissile.velocity.y,
+        };
+
+        const r2 = relPos.x * relPos.x + relPos.y * relPos.y;
+        const range = Math.sqrt(r2);
+        const losRate = r2 > 1e-3 ? crossZ(relPos, relVel) / r2 : 0;
+        const closingVelocity = r2 > 1e-3 ? -dot(relPos, relVel) / range : 0;
+
+        const missileHeading = Math.atan2(sampleMissile.velocity.y, sampleMissile.velocity.x);
+        const desiredHeading = Math.atan2(relPos.y, relPos.x);
+        const headingError = normalizeAngle(desiredHeading - missileHeading);
+
+        const maxTurnRate = guidanceRef.current === 'PURE_PURSUIT' ? 1.2 : 5.2;
+        const lateralAccel = NAVIGATION_CONSTANT * closingVelocity * losRate;
+        const commandTurnRate = guidanceRef.current === 'PURE_PURSUIT'
+          ? clamp(headingError / Math.max(FIXED_STEP, 1e-4), -maxTurnRate, maxTurnRate)
+          : clamp(lateralAccel / Math.max(sampleMissile.speed, 1), -maxTurnRate, maxTurnRate);
+
+        mathTelemetryRef.current = {
+          missileId: sampleMissile.id,
+          targetId: sampleTarget.id,
+          range,
+          closingVelocity,
+          losRate,
+          headingErrorDeg: headingError * (180 / Math.PI),
+          commandTurnDegPerSec: commandTurnRate * (180 / Math.PI),
+          lateralAccel,
+          timeToGo: closingVelocity > 0.1 ? range / closingVelocity : range / Math.max(sampleMissile.speed, 1),
+        };
+      } else {
+        mathTelemetryRef.current = null;
+      }
+    } else {
+      mathTelemetryRef.current = null;
+    }
+
     const resolvedEnemies = [...updatedEnemies];
     const resolvedMissiles = updatedMissiles.map(missile => {
       if (!missile.active) return missile;
@@ -371,6 +435,7 @@ function App() {
       setSimTime(simTimeRef.current);
       setEnemies([...enemiesRef.current]);
       setMissiles([...missilesRef.current]);
+      setMathTelemetry(mathTelemetryRef.current ? { ...mathTelemetryRef.current } : null);
 
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -503,6 +568,23 @@ function App() {
             <div>Legend:</div>
             <div>Green dot = battery, orange triangles = enemy drones, cyan dots = interceptors.</div>
             <div>Zigzag + Pure Pursuit can fail. Zigzag + PN should recover interception.</div>
+          </div>
+
+          <div className="text-xs font-mono text-cyber-green/80 bg-cyber-dark border border-cyber-green/25 rounded p-3 space-y-1">
+            <div className="text-cyber-cyan">Live Math Operations</div>
+            {!mathTelemetry && <div className="text-cyber-green/70">No active missile-target pair.</div>}
+            {mathTelemetry && (
+              <>
+                <div>Pair: M-{mathTelemetry.missileId} vs T-{mathTelemetry.targetId}</div>
+                <div>Range r = {mathTelemetry.range.toFixed(2)} px</div>
+                <div>Closing velocity Vc = {mathTelemetry.closingVelocity.toFixed(2)} px/s</div>
+                <div>LOS rate lambda_dot = {mathTelemetry.losRate.toFixed(4)} rad/s</div>
+                <div>Heading error = {mathTelemetry.headingErrorDeg.toFixed(2)} deg</div>
+                <div>Commanded turn = {mathTelemetry.commandTurnDegPerSec.toFixed(2)} deg/s</div>
+                <div>PN lateral accel a_n = {mathTelemetry.lateralAccel.toFixed(2)} px/s^2</div>
+                <div>Time-to-go t_go = {mathTelemetry.timeToGo.toFixed(2)} s</div>
+              </>
+            )}
           </div>
 
           <div className="min-h-0 flex-1 max-h-[48vh] xl:max-h-none overflow-y-auto bg-cyber-dark border border-cyber-green/25 rounded p-3">
